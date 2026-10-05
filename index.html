@@ -110,6 +110,10 @@ footer{margin-top:24px;font-size:.85rem;color:var(--muted)}
   <section class="panel" aria-labelledby="ctl-h">
     <h2 id="ctl-h">Drug A parameters</h2>
     <div id="controls"></div>
+    <div class="btns" style="margin-top:-6px">
+      <button type="button" id="setLD">Loading dose = D ÷ (1 − e<sup>−kτ</sup>)</button>
+    </div>
+    <p class="hint" id="ldHint">The loading dose replaces the first dose. 0 = no loading dose.</p>
 
     <details open>
       <summary>Number of doses</summary>
@@ -194,11 +198,11 @@ footer{margin-top:24px;font-size:.85rem;color:var(--muted)}
 const MODE = "oral";           // "iv" or "oral"
 const ORAL = MODE === "oral";
 const DEFAULTS = ORAL ? {
-  A:{D:400, CL:4, V:60, ka:1, F:100, tau:12, N:0},
-  B:{D:400, CL:4, V:60, ka:1, F:100, tau:12, N:0}, tlast:70
+  A:{D:400, CL:4, V:60, ka:1, F:100, tau:12, N:0, DL:0},
+  B:{D:400, CL:4, V:60, ka:1, F:100, tau:12, N:0, DL:0}, tlast:70
 } : {
-  A:{D:500, CL:4.5, V:25, tau:6, N:0},
-  B:{D:500, CL:4.5, V:25, tau:6, N:0}, tlast:70
+  A:{D:500, CL:4.5, V:25, tau:6, N:0, DL:0},
+  B:{D:500, CL:4.5, V:25, tau:6, N:0, DL:0}, tlast:70
 };
 const clone = o => JSON.parse(JSON.stringify(o));
 let S = clone(DEFAULTS);
@@ -217,9 +221,13 @@ function model(p){
     return Math.exp(-L*s) * (1-Math.exp(-L*n*tau)) / (1-Math.exp(-L*tau));
   };
   const amp = ORAL ? F*p.D*ka/(p.V*(ka-k)) : p.D/p.V;
+  // a loading dose (if > 0) replaces the first dose: add (DL − D) as an extra single dose at t = 0
+  const extra = (p.DL>0 && Nmax>=1) ? (p.DL-p.D) : 0;
+  const ampX = ORAL ? F*extra*ka/(p.V*(ka-k)) : extra/p.V;
   const C = t => {
     if (t<0 || F===0) return 0;
-    const c = ORAL ? amp*(G(k,t)-G(ka,t)) : amp*G(k,t);
+    let c = ORAL ? amp*(G(k,t)-G(ka,t)) : amp*G(k,t);
+    if (extra) c += ORAL ? ampX*(Math.exp(-k*t)-Math.exp(-ka*t)) : ampX*Math.exp(-k*t);
     return Math.max(0,c);
   };
   // steady state (indefinite dosing)
@@ -239,7 +247,7 @@ function model(p){
   }
   if (F===0){ CmaxSS=CminSS=C1max=0; }
   const CavgSS = F*p.D/(p.CL*tau);
-  const Cavg = t => (t>=0 && t <= (isFinite(Nmax)?Nmax*tau:Infinity)) ? CavgSS*(1-Math.exp(-k*t)) : NaN;
+  const Cavg = t => (t>=0 && t <= (isFinite(Nmax)?Nmax*tau:Infinity)) ? CavgSS*(1-Math.exp(-k*t)) + F*extra*(Math.exp(k*tau)-1)/(p.CL*tau)*Math.exp(-k*t) : NaN;   // interval-average contribution of the extra loading amount
   const t12 = Math.LN2/k, term = ORAL ? Math.LN2/Math.min(k,ka) : t12;
   // highest concentration actually plotted (for axis scaling)
   let peak=0; const T=S.tlast, n=800;
@@ -247,6 +255,7 @@ function model(p){
   const lastDoseT = isFinite(Nmax) ? (Nmax-1)*tau : Infinity;
   return {C, Cavg, k, ka:ORAL?p.ka:NaN, F, tau, t12, term, flip: ORAL && p.ka < k*0.999,
           CmaxSS, CminSS, CavgSS, tmaxSS, C1max, tmax1, Rk, AUCtau:F*p.D/p.CL,
+          DL:p.DL, LDss: p.D*Rk, hasLD: extra!==0, DLtxt:p.DL,
           accum: C1max>0 ? CmaxSS/C1max : NaN, fluct: CminSS>0 ? CmaxSS/CminSS : NaN,
           peak, Nmax, lastDoseT, Clast:C(S.tlast)};
 }
@@ -258,12 +267,14 @@ const specs = ORAL ? [
   {key:"V",  label:"Volume of distribution", sym:"V", unit:"L", min:5, max:300, step:1, dp:0},
   {key:"ka", label:"Absorption rate constant", sym:"k<sub>a</sub>", unit:"h⁻¹", min:0.05, max:5, step:0.01, dp:2},
   {key:"F",  label:"Bioavailability", sym:"F", unit:"%", min:0, max:100, step:1, dp:0},
-  {key:"tau",label:"Dosing interval", sym:"τ", unit:"h", min:1, max:48, step:0.5, dp:1}
+  {key:"tau",label:"Dosing interval", sym:"τ", unit:"h", min:1, max:48, step:0.5, dp:1},
+  {key:"DL", label:"Loading dose", sym:"D<sub>L</sub>", unit:"mg", min:0, max:5000, step:10, dp:0}
 ] : [
   {key:"D",  label:"Dose", sym:"D", unit:"mg", min:50, max:2000, step:10, dp:0},
   {key:"CL", label:"Clearance", sym:"CL", unit:"L/h", min:0.5, max:50, step:0.1, dp:1},
   {key:"V",  label:"Volume of distribution", sym:"V", unit:"L", min:5, max:200, step:1, dp:0},
-  {key:"tau",label:"Dosing interval", sym:"τ", unit:"h", min:1, max:48, step:0.5, dp:1}
+  {key:"tau",label:"Dosing interval", sym:"τ", unit:"h", min:1, max:48, step:0.5, dp:1},
+  {key:"DL", label:"Loading dose", sym:"D<sub>L</sub>", unit:"mg", min:0, max:5000, step:10, dp:0}
 ];
 const ctlBox = document.getElementById("controls");
 const ctl = {};
@@ -309,10 +320,14 @@ function buildRefs(){
   const bf = [{k:"D",label:"Dose",unit:"mg",min:1,max:20000,step:10},{k:"CL",label:"CL",unit:"L/h",min:0.1,max:500,step:0.1},
     {k:"V",label:"V",unit:"L",min:1,max:5000,step:1}];
   if(ORAL) bf.push({k:"ka",label:"kₐ",unit:"h⁻¹",min:0.01,max:20,step:0.01},{k:"F",label:"F",unit:"%",min:0,max:100,step:1});
-  bf.push({k:"tau",label:"τ",unit:"h",min:0.5,max:240,step:0.5}, nField);
+  bf.push({k:"tau",label:"τ",unit:"h",min:0.5,max:240,step:0.5},{k:"DL",label:"Loading dose",unit:"mg",min:0,max:50000,step:10}, nField);
   refInputs("refB", S.B, bf);
   refInputs("refT", S, [{k:"tlast",label:"Last time",unit:"h",min:4,max:500,step:1}]);
 }
+document.getElementById("setLD").onclick = ()=>{
+  const k=S.A.CL/S.A.V, v=Math.min(5000, Math.round(S.A.D/(1-Math.exp(-k*S.A.tau))/10)*10);
+  S.A.DL=v; syncControls(); render(); announce();
+};
 document.getElementById("freeze").onclick = ()=>{ S.B = clone(S.A); buildRefs(); render(); announce(); };
 document.getElementById("reset").onclick = ()=>{ S = clone(DEFAULTS); lockedY={lin:null,log:null}; document.getElementById("lockY").checked=false; syncControls(); render(); announce(); };
 const viewBtns={both:document.getElementById("bothBtn"),lin:document.getElementById("linBtn"),log:document.getElementById("logBtn")};
@@ -583,6 +598,7 @@ function fillResults(m){
     [`Average steady-state concentration, ${hs("∞","avg")}`,"mg/L",x=>x.CavgSS],
     [`Accumulation, accum = ${hs("∞","max")} ÷ ${hs("1","max")}`,"",x=>x.accum],
     ["Accumulation factor, 1/(1 − e^(−kτ))","",x=>x.Rk],
+    ["Loading dose to start at steady state, D/(1 − e^(−kτ))","mg",x=>x.LDss],
     [`Fluctuation, fluc = ${hs("∞","max")} ÷ ${hs("∞","min")}`,"",x=>x.fluct],
     [`Concentration at ${fmt(S.tlast)} h`,"mg/L",x=>x.Clast]
   ];
@@ -606,6 +622,12 @@ function noteFor(A){
   const f=document.getElementById("note");
   let msg="";
   if(A.F===0) msg=`<strong>F = 0%:</strong> none of the dose reaches the systemic circulation.`;
+  else if(A.hasLD){
+    const r=A.DL/A.LDss;
+    if(Math.abs(r-1)<0.03) msg=`<strong>Loading dose = D/(1 − e<sup>−kτ</sup>) = ${fmt(A.DL)} mg:</strong> the curve starts out at the steady-state pattern instead of building up over about 5 half-lives.`+(ORAL?` (With oral absorption the match is close rather than exact.)`:"");
+    else if(r>1) msg=`<strong>Loading dose above the steady-state amount:</strong> ${fmt(A.DL)} mg vs ${fmt(A.LDss)} mg, so concentrations start above the steady-state range and drift down to it.`;
+    else msg=`<strong>Loading dose below the steady-state amount:</strong> ${fmt(A.DL)} mg vs ${fmt(A.LDss)} mg, so concentrations still climb toward steady state, just from a higher start.`;
+  }
   else if(A.flip) msg=`<strong>Flip-flop kinetics:</strong> absorption (kₐ = ${fmt(A.ka)} h⁻¹) is slower than elimination (k = ${fmt(A.k)} h⁻¹), so the terminal half-life (${fmt(A.term)} h) and the time to steady state are set by absorption.`;
   else if(A.tau < A.t12*0.75) msg=`<strong>Dosing interval shorter than the half-life:</strong> τ = ${fmt(A.tau)} h vs t½ = ${fmt(A.t12)} h, so drug accumulates about ${fmt(A.Rk)}-fold and the peaks and troughs stay close together (fluctuation ${fmt(A.fluct)}).`;
   else if(A.tau > A.t12*3) msg=`<strong>Dosing interval much longer than the half-life:</strong> little accumulation (factor ${fmt(A.Rk)}), and large swings between peak and trough (fluctuation ${fmt(A.fluct)}).`;
@@ -615,7 +637,7 @@ function noteFor(A){
 function describe(m){
   const A=m.A, p=S.A;
   let s=`Concentration–time ${view==="both"?"plots on linear and semi-log axes":view==="log"?"plot on a semi-log axis":"plot on a linear axis"} from 0 to ${fmt(S.tlast)} hours. `;
-  s+=`Drug A: ${fmt(p.D)} mg every ${fmt(p.tau)} hours${p.N>0?` for ${p.N} doses`:""}. Steady-state peak ${fmt(A.CmaxSS)} mg/L, trough ${fmt(A.CminSS)} mg/L, average ${fmt(A.CavgSS)} mg/L; half-life ${fmt(A.term)} hours; steady state in about ${fmt(5*A.term)} hours. `;
+  s+=`Drug A: ${fmt(p.D)} mg every ${fmt(p.tau)} hours${p.N>0?` for ${p.N} doses`:""}${p.DL>0?`, with a ${fmt(p.DL)} mg loading dose`:""}. Steady-state peak ${fmt(A.CmaxSS)} mg/L, trough ${fmt(A.CminSS)} mg/L, average ${fmt(A.CavgSS)} mg/L; half-life ${fmt(A.term)} hours; steady state in about ${fmt(5*A.term)} hours. `;
   if(document.getElementById("showB").checked) s+=`Reference drug B: steady-state peak ${fmt(m.B.CmaxSS)} mg/L, trough ${fmt(m.B.CminSS)} mg/L.`;
   return s;
 }
